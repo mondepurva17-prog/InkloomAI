@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <meta name="theme-color" content="#07110d">
+    <meta name="description"
+          content="Inkloom AI - AI-powered brand governance and content review.">
+
+    <title>Inkloom AI | Brand Governance</title>
+
+    <!-- Correct Flask stylesheet path -->
+    <link rel="stylesheet"
+          href="{{ url_for('static', filename='style.css') }}">
+
+    <!-- Load JavaScript after HTML parsing -->
+    <script src="{{ url_for('static', filename='app.js') }}"
+            defer></script>
+</head>
+
+<body>
+<div class="app-shell">
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+        <a href="/" class="brand-logo">
+            <span class="logo-mark">i.</span>
+            <span>inkloom<span class="accent">AI</span></span>
+        </a>
+
+        <p class="sidebar-label">WORKSPACE</p>
+
+        <nav class="navigation" aria-label="Main navigation">
+            <button class="nav-link active"
+                    data-view="review"
+                    type="button">
+                <span>✳</span> Content review
+            </button>
+
+            <button class="nav-link"
+                    data-view="guidelines"
+                    type="button">
+                <span>◎</span> Brand guidelines
+            </button>
+
+            <button class="nav-link"
+                    data-view="history"
+                    type="button">
+                <span>◷</span> Review history
+            </button>
+        </nav>
+
+        <div class="sidebar-bottom">
+            <div class="status-indicator">
+                <span class="status-dot"></span>
+                Rule engine active
+            </div>
+            <p class="sidebar-small">INKLOOM AI · ROUND 2 MVP</p>
+            <p class="sidebar-small">Human in control. Your team decides.</p>
+        </div>
+    </aside>
+
+    <!-- MAIN WORKSPACE -->
+    <main class="main-content">
+
+        <header class="topbar">
+            <div>
+                <p class="eyebrow">WORKSPACE / <span id="breadcrumb">Content review</span></p>
+                <h2 class="topbar-title">Brand governance workspace</h2>
+            </div>
+
+            <div class="topbar-status">
+                <span class="status-dot"></span>
+                <span>System ready</span>
+            </div>
+        </header>
+
+        <!-- CONTENT REVIEW VIEW -->
+        <section id="review-view" class="view active">
+
+            <section class="hero">
+                <div class="hero-copy">
+                    <span class="eyebrow">
+                        ✳ BRAND SAFETY, BUILT IN
+                    </span>
+
+                    <h1>
+                        Every word.<br>
+                        <span class="hero-accent">On brand.</span><br>
+                        Before it goes live.
+                    </h1>
+
+                    <p>
+                        Check your content against approved brand rules.
+                        Understand the issues. Make the final call.
+                    </p>
+
+                    <div class="hero-tags">
+                        <span>✳ Content intelligence</span>
+                        <span>● Human review</span>
+                        <span>✓ Brand consistency</span>
+                    </div>
+                </div>
+
+                <div class="hero-visual" aria-hidden="true">
+                    <div class="visual-orbit orbit-one"></div>
+                    <div class="visual-orbit orbit-two"></div>
+
+                    <div class="visual-core">
+                        <span class="visual-symbol">i.</span>
+                        <span class="visual-label">INKLOOM</span>
+                        <span class="visual-subtitle">CONTENT INTELLIGENCE</span>
+                    </div>
+
+                    <span class="floating-chip chip-one">✓ Brand fit</span>
+                    <span class="floating-chip chip-two">✳ Rule check</span>
+                    <span class="floating-chip chip-three">● Human-led</span>
+                </div>
+            </section>
+
+            <div class="workspace-grid">
+
+                <!-- CONTENT INPUT -->
+                <section class="panel editor-panel">
+                    <div class="panel-heading">
+                        <div>
+                            <span class="step-number">01</span>
+                            <h2>Content inspection</h2>
+                            <p>Paste content or upload a text file to check it.</p>
+                        </div>
+
+                        <span class="panel-icon">✎</span>
+                    </div>
+
+                    <div class="field-header">
+                        <label for="content-input">DRAFT CONTENT</label>
+                        <span class="field-hint">TXT / MD / CSV</span>
+                    </div>
+
+                    <div class="editor-toolbar">
+                        <label class="upload-button" for="file-input">
+                            ↑ Upload file
+                        </label>
+
+                        <input type="file"
+                               id="file-input"
+                               accept=".txt,.md,.csv">
+
+                        <button type="button"
+                                id="load-sample"
+                                class="secondary-button">
+                            Load sample ↗
+                        </button>
+                    </div>
+
+                    <textarea
+                        id="content-input"
+                        maxlength="20000"
+                        placeholder="Paste your campaign, product description, social post, or marketing copy here..."
+                        aria-label="Draft content"></textarea>
+
+                    <div class="editor-footer">
+                        <span id="character-count">0 characters</span>
+                        <span>Maximum 20,000 characters</span>
+                    </div>
+
+                    <button type="button"
+                            id="analyze-button"
+                            class="primary-button">
+                        <span>✳</span>
+                        Analyze content
+                        <span class="button-arrow">→</span>
+                    </button>
+
+                    <p class="privacy-note">
+                        <span>●</span>
+                        Your content is reviewed against the configured rules.
+                    </p>
+                </section>
+
+                <!-- ACTIVE RULES -->
+                <section class="panel rules-panel">
+                    <div class="panel-heading">
+                        <div>
+                            <span class="step-number">02</span>
+                            <h2>Active brand rules</h2>
+                            <p>Applied to each review.</p>
+                        </div>
+
+                        <span class="panel-icon">◎</span>
+                    </div>
+
+                    <div id="active-rules" class="active-rules">
+                        <div class="loading-state">
+                            <span class="loading-dot"></span>
+                            Loading brand rules...
+                        </div>
+                    </div>
+
+                    <button type="button"
+                            class="text-button"
+                            data-view="guidelines">
+                        Manage brand guidelines ↗
+                    </button>
+
+                    <div class="rule-info">
+                        <div class="rule-info-icon">✳</div>
+                        <h3>One source of truth</h3>
+                        <p>
+                            Update approved terms and restrictions in one place.
+                        </p>
+                    </div>
+
+                    <div class="rule-info">
+                        <div class="rule-info-icon">✓</div>
+                        <h3>Human-led decisions</h3>
+                        <p>
+                            The checker provides recommendations.
+                            Your team makes the final decision.
+                        </p>
+                    </div>
+                </section>
+            </div>
+
+            <!-- ANALYSIS RESULTS -->
+            <section class="panel results-panel">
+                <div class="panel-heading">
+                    <div>
+                        <span class="eyebrow">✳ ANALYSIS RESULTS</span>
+                        <h2>Your review, at a glance</h2>
+                        <p>Review detected issues and suggested improvements.</p>
+                    </div>
+
+                    <span class="result-status" id="analysis-status">
+                        Awaiting analysis
+                    </span>
+                </div>
+
+                <div class="results-grid">
+                    <div class="score-card">
+                        <p class="field-hint">BRAND ALIGNMENT SCORE</p>
+
+                        <div class="score-ring" id="score-ring">
+                            <div class="score-inner">
+                                <strong id="score-value">--</strong>
+                                <span>/ 100</span>
+                            </div>
+                        </div>
+
+                        <p id="score-caption">
+                            Your score will appear here.
+                        </p>
+
+                        <p class="score-disclaimer">
+                            Rule-based indicator, not a guarantee.
+                        </p>
+                    </div>
+
+                    <div class="findings-card">
+                        <div class="findings-heading">
+                            <h3>Findings &amp; recommendations</h3>
+                            <span id="finding-count" class="count-badge">0</span>
+                        </div>
+
+                        <div class="severity-legend">
+                            <span><i class="severity-high"></i> High priority</span>
+                            <span><i class="severity-medium"></i> Review</span>
+                            <span><i class="severity-low"></i> Style</span>
+                        </div>
+
+                        <div id="findings-list" aria-live="polite">
+                            <div class="empty-state">
+                                <span class="empty-state-icon">✳</span>
+                                <h3>No findings yet</h3>
+                                <p>
+                                    Add your draft and select Analyze content
+                                    to see recommendations.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- HUMAN DECISION -->
+                <div class="decision-section">
+                    <div>
+                        <span class="step-number">03</span>
+                        <h3>Human decision</h3>
+                        <p>
+                            Review the findings and record your decision.
+                            Content is not published automatically.
+                        </p>
+                    </div>
+
+                    <label class="field-label" for="reviewer-note">
+                        REVIEWER NOTE <span>(OPTIONAL)</span>
+                    </label>
+
+                    <textarea
+                        id="reviewer-note"
+                        class="reviewer-note"
+                        rows="3"
+                        placeholder="Add a reason or feedback for the team..."></textarea>
+
+                    <div class="decision-buttons">
+                        <button type="button"
+                                id="request-changes"
+                                class="decision-button changes-button">
+                            ↻ Request changes
+                        </button>
+
+                        <button type="button"
+                                id="reject-content"
+                                class="decision-button reject-button">
+                            × Reject
+                        </button>
+
+                        <button type="button"
+                                id="approve-content"
+                                class="decision-button approve-button">
+                            ✓ Approve content
+                        </button>
+                    </div>
+
+                    <p id="decision-message"
+                       class="decision-message"
+                       aria-live="polite"></p>
+                </div>
+            </section>
+        </section>
+
+        <!-- BRAND GUIDELINES VIEW -->
+        <section id="guidelines-view" class="view" hidden>
+            <section class="page-intro">
+                <span class="eyebrow">✳ YOUR BRAND PLAYBOOK</span>
+                <h1>Guidelines that keep you consistent.</h1>
+                <p>Edit the rules used by the content checker.</p>
+            </section>
+
+            <section class="panel guidelines-panel">
+                <div class="panel-heading">
+                    <div>
+                        <h2>Brand guidelines</h2>
+                        <p>Define your voice, approved terms, and restrictions.</p>
+                    </div>
+                    <span class="panel-icon">◎</span>
+                </div>
+
+                <form id="guidelines-form">
+                    <div class="form-field">
+                        <label for="brand-name">BRAND NAME</label>
+                        <input id="brand-name"
+                               name="brand_name"
+                               type="text"
+                               placeholder="Enter your brand name"
+                               required>
+                    </div>
+
+                    <div class="form-field">
+                        <label for="brand-tone">BRAND TONE</label>
+                        <input id="brand-tone"
+                               name="tone"
+                               type="text"
+                               placeholder="e.g. Friendly, clear, professional">
+                    </div>
+
+                    <div class="form-field">
+                        <label for="approved-terms">APPROVED TERMS</label>
+                        <textarea id="approved-terms"
+                                  name="approved_terms"
+                                  rows="4"
+                                  placeholder="Enter approved terms, one per line"></textarea>
+                        <span class="field-hint">
+                            Terms your brand prefers to use.
+                        </span>
+                    </div>
+
+                    <div class="form-field">
+                        <label for="forbidden-terms">RESTRICTED OR FORBIDDEN TERMS</label>
+                        <textarea id="forbidden-terms"
+                                  name="forbidden_terms"
+                                  rows="4"
+                                  placeholder="Enter restricted terms, one per line"></textarea>
+                        <span class="field-hint">
+                            Words or phrases that should trigger a review.
+                        </span>
+                    </div>
+
+                    <div class="form-field">
+                        <label for="required-terms">REQUIRED TERMS</label>
+                        <textarea id="required-terms"
+                                  name="required_terms"
+                                  rows="4"
+                                  placeholder="Enter required terms, one per line"></textarea>
+                    </div>
+
+                    <div class="form-field">
+                        <label for="brand-facts">APPROVED BRAND FACTS</label>
+                        <textarea id="brand-facts"
+                                  name="facts"
+                                  rows="4"
+                                  placeholder="Enter approved product facts, one per line"></textarea>
+                    </div>
+
+                    <div class="form-actions">
+                        <button type="submit" class="primary-button">
+                            Save brand guidelines →
+                        </button>
+
+                        <p id="guidelines-message"
+                           class="form-message"
+                           aria-live="polite"></p>
+                    </div>
+                </form>
+            </section>
+        </section>
+
+        <!-- REVIEW HISTORY VIEW -->
+        <section id="history-view" class="view" hidden>
+            <section class="page-intro">
+                <span class="eyebrow">✳ REVIEW LOG</span>
+                <h1>Every decision, documented.</h1>
+                <p>View past content reviews and human decisions.</p>
+            </section>
+
+            <section class="panel history-panel">
+                <div class="panel-heading">
+                    <div>
+                        <h2>Review history</h2>
+                        <p>Previously analyzed content and reviewer decisions.</p>
+                    </div>
+
+                    <button type="button"
+                            id="refresh-history"
+                            class="secondary-button">
+                        ↻ Refresh
+                    </button>
+                </div>
+
+                <div id="history-list" aria-live="polite">
+                    <div class="empty-state">
+                        <span class="empty-state-icon">◷</span>
+                        <h3>Loading review history</h3>
+                        <p>Your saved reviews will appear here.</p>
+                    </div>
+                </div>
+            </section>
+        </section>
+
+        <!-- FOOTER -->
+        <footer class="app-footer">
+            <a href="/" class="footer-brand">inkloom<span>AI</span></a>
+            <p>Thoughtful content. Consistent brands. Human decisions.</p>
+            <span class="footer-status">
+                <span class="status-dot"></span> Round 2 MVP
+            </span>
+        </footer>
+    </main>
+</div>
+</body>
+</html>
