@@ -529,10 +529,9 @@ def row_to_review(row):
 # =========================================================
 # WEBSITE
 # =========================================================
-
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return "Inkloom AI server is working!"
 
 
 # =========================================================
