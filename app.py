@@ -1,28 +1,53 @@
-from flask import Flask, render_template, request, jsonify
+
+from flask import Flask, render_template, request, jsonify, session
 from werkzeug.exceptions import HTTPException
+from werkzeug.security import generate_password_hash, check_password_hash
+from functools import wraps
+from pathlib import Path
+from datetime import datetime, timezone
 import sqlite3
 import json
 import re
-from datetime import datetime, timezone
-from pathlib import Path
+import os
+import logging
+import traceback
+
+# =========================================================
+# INKLOOM AI - BRAND GOVERNANCE PLATFORM
+# =========================================================
 
 app = Flask(__name__)
+
+app.secret_key = os.environ.get(
+    "SECRET_KEY",
+    "inkloom-ai-development-secret-change-before-deployment"
+)
+
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "inkloom.db"
 
-REVIEW_COLUMNS = {
-    "id", "content", "analysis", "compliance_score",
-    "decision", "reviewer_note", "created_at", "updated_at"
-}
-GUIDELINE_COLUMNS = {"id", "data", "updated_at"}
+# Render writable database directory
+DATA_DIR = Path(os.environ.get("DATA_DIR", str(BASE_DIR)))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+DB_PATH = DATA_DIR / "inkloom.db"
+
+MAX_ANALYSIS_LENGTH = 20000
+
+# Logging configuration
+logging.basicConfig(level=logging.INFO)
+app.logger.setLevel(logging.INFO)
 
 
-# ---------------- DATABASE ----------------
+# =========================================================
+# DATABASE
+# =========================================================
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -42,23 +67,19 @@ def default_guidelines():
     }
 
 
-def ensure_schema(conn):
-    # Drop tables created by older versions so they are recreated correctly.
-    for table, expected in (
-        ("reviews", REVIEW_COLUMNS),
-        ("guidelines", GUIDELINE_COLUMNS),
-    ):
-        cols = {
-            row["name"]
-            for row in conn.execute(f"PRAGMA table_info({table})")
-        }
-        if cols and not expected.issubset(cols):
-            conn.execute(f"DROP TABLE {table}")
-
-
 def init_db():
+
     with get_db() as conn:
-        ensure_schema(conn)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                email TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                role TEXT NOT NULL
+            )
+        """)
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS guidelines (
@@ -81,43 +102,132 @@ def init_db():
             )
         """)
 
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                review_id INTEGER NOT NULL,
+                user_id INTEGER,
+                user_name TEXT NOT NULL,
+                action TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            )
+        """)
+
         existing = conn.execute(
             "SELECT id FROM guidelines WHERE id = 1"
         ).fetchone()
 
         if existing is None:
-            conn.execute(
-                """INSERT INTO guidelines (id, data, updated_at)
-                   VALUES (1, ?, ?)""",
-                (json.dumps(default_guidelines()), now_iso())
-            )
+
+            conn.execute("""
+                INSERT INTO guidelines (id, data, updated_at)
+                VALUES (1, ?, ?)
+            """, (json.dumps(default_guidelines()), now_iso()))
+
+        demo_users = [
+            ("Admin Demo", "admin@inkloom.demo", "Admin@123", "admin"),
+            ("Reviewer Demo", "reviewer@inkloom.demo", "Review@123", "reviewer"),
+            ("Creator Demo", "creator@inkloom.demo", "Create@123", "creator")
+        ]
+
+        for name, email, password, role in demo_users:
+
+            user = conn.execute(
+                "SELECT id FROM users WHERE email = ?",
+                (email,)
+            ).fetchone()
+
+            if user is None:
+
+                conn.execute("""
+                    INSERT INTO users (name, email, password, role)
+                    VALUES (?, ?, ?, ?)
+                """, (
+                    name,
+                    email,
+                    generate_password_hash(password),
+                    role
+                ))
 
 
 def get_guidelines():
+
+    defaults = default_guidelines()
+
     with get_db() as conn:
+
         row = conn.execute(
             "SELECT data FROM guidelines WHERE id = 1"
         ).fetchone()
 
-    defaults = default_guidelines()
+    if row:
 
-    if not row:
-        return defaults
+        try:
+            saved = json.loads(row["data"])
 
-    try:
-        saved = json.loads(row["data"])
-        if isinstance(saved, dict):
-            defaults.update(saved)
-    except (json.JSONDecodeError, TypeError):
-        pass
+            if isinstance(saved, dict):
+                defaults.update(saved)
+
+        except (json.JSONDecodeError, TypeError):
+            app.logger.exception("Unable to read saved guidelines")
 
     return defaults
 
 
-# ---------------- GUIDELINE HELPERS ----------------
+# =========================================================
+# LOGIN AND ROLE HELPERS
+# =========================================================
+
+def login_required(function):
+
+    @wraps(function)
+    def wrapper(*args, **kwargs):
+
+        if "user_id" not in session:
+
+            return jsonify({
+                "success": False,
+                "error": "Please sign in to continue."
+            }), 401
+
+        return function(*args, **kwargs)
+
+    return wrapper
+
+
+def reviewer_required(function):
+
+    @wraps(function)
+    def wrapper(*args, **kwargs):
+
+        if "user_id" not in session:
+
+            return jsonify({
+                "success": False,
+                "error": "Please sign in to continue."
+            }), 401
+
+        if session.get("user_role") not in ["admin", "reviewer"]:
+
+            return jsonify({
+                "success": False,
+                "error": "Only admins and reviewers can access this."
+            }), 403
+
+        return function(*args, **kwargs)
+
+    return wrapper
+
+
+# =========================================================
+# GUIDELINE HELPERS
+# =========================================================
 
 def normalise_terms(value):
+
     if isinstance(value, list):
+
         return [
             str(item).strip()
             for item in value
@@ -125,6 +235,7 @@ def normalise_terms(value):
         ]
 
     if isinstance(value, str):
+
         return [
             item.strip()
             for item in re.split(r"[\n,]+", value)
@@ -135,61 +246,42 @@ def normalise_terms(value):
 
 
 def normalise_guidelines(payload):
+
     result = get_guidelines()
 
-    aliases = {
-        "brand_name": ("brand_name", "name"),
-        "brand_tone": ("brand_tone", "tone"),
-        "approved_terms": ("approved_terms", "approved_words"),
-        "forbidden_terms": (
-            "forbidden_terms",
-            "restricted_terms",
-            "banned_terms"
-        ),
-        "required_terms": (
-            "required_terms",
-            "required_phrases"
-        ),
-        "brand_facts": ("brand_facts", "facts")
-    }
+    for key in ["brand_name", "brand_tone", "brand_facts"]:
 
-    for target, keys in aliases.items():
-        for key in keys:
-            if key not in payload:
-                continue
+        if key in payload:
+            result[key] = str(payload[key] or "").strip()
 
-            value = payload[key]
+    for key in [
+        "approved_terms",
+        "forbidden_terms",
+        "required_terms"
+    ]:
 
-            if target in (
-                "approved_terms",
-                "forbidden_terms",
-                "required_terms"
-            ):
-                result[target] = normalise_terms(value)
-
-            elif target == "brand_facts":
-                if isinstance(value, (dict, list)):
-                    result[target] = value
-                else:
-                    result[target] = str(value or "").strip()
-
-            else:
-                result[target] = str(value or "").strip()
-
-            break
+        if key in payload:
+            result[key] = normalise_terms(payload[key])
 
     return result
 
 
-# ---------------- CONTENT ANALYSIS ----------------
+# =========================================================
+# CONTENT ANALYSIS ENGINE
+# =========================================================
+
+def add_finding(findings, title, category, severity, message, suggestion):
+
+    findings.append({
+        "title": title,
+        "category": category,
+        "severity": severity,
+        "message": message,
+        "suggestion": suggestion
+    })
+
 
 def analyse_content(content, guidelines):
-    """
-    Rule-based brand governance analysis.
-
-    The compliance score is a heuristic indicator.
-    It is not a trained AI model confidence score.
-    """
 
     findings = []
     lower_content = content.casefold()
@@ -197,167 +289,154 @@ def analyse_content(content, guidelines):
     forbidden = normalise_terms(
         guidelines.get("forbidden_terms", [])
     )
+
     required = normalise_terms(
         guidelines.get("required_terms", [])
     )
 
-    # 1. Detect restricted terms.
+    approved = normalise_terms(
+        guidelines.get("approved_terms", [])
+    )
+
+    # Restricted terms
     for term in forbidden:
+
         pattern = re.compile(
             r"(?<!\w)" + re.escape(term) + r"(?!\w)",
             re.IGNORECASE
         )
 
         if pattern.search(content):
-            findings.append({
-                "title": "Restricted term detected",
-                "category": "Brand guidelines",
-                "severity": "high",
-                "message": (
-                    f'The restricted term "{term}" appears '
-                    "in your content."
-                ),
-                "suggestion": (
-                    f'Remove "{term}" or replace it with '
-                    "a verified, compliant statement."
-                )
-            })
 
-    # 2. Check required phrases.
+            add_finding(
+                findings,
+                "Restricted term detected",
+                "Brand guidelines",
+                "high",
+                f'The restricted term "{term}" appears in your content.',
+                f'Remove "{term}" or replace it with a compliant statement.'
+            )
+
+    # Required phrases
     for phrase in required:
-        if phrase.casefold() not in lower_content:
-            findings.append({
-                "title": "Required phrase missing",
-                "category": "Brand guidelines",
-                "severity": "medium",
-                "message": (
-                    f'The required phrase "{phrase}" '
-                    "was not found."
-                ),
-                "suggestion": (
-                    f'Include "{phrase}" where it fits naturally.'
-                )
-            })
 
-    # 3. Detect potentially misleading claims.
+        if phrase.casefold() not in lower_content:
+
+            add_finding(
+                findings,
+                "Required phrase missing",
+                "Brand guidelines",
+                "medium",
+                f'The required phrase "{phrase}" was not found.',
+                f'Include "{phrase}" where it fits naturally.'
+            )
+
+    # Approved terminology
+    if approved:
+
+        found = [
+            term for term in approved
+            if term.casefold() in lower_content
+        ]
+
+        if not found:
+
+            add_finding(
+                findings,
+                "Approved terminology not used",
+                "Brand voice",
+                "low",
+                "None of the configured approved terms were found.",
+                "Consider using approved brand terminology."
+            )
+
+    # Marketing language checks
     patterns = [
         (
             r"\bguaranteed\b",
             "Absolute claim",
             "high",
-            "Avoid guarantees unless approved and substantiated."
+            "Potentially absolute wording was detected.",
+            "Avoid guarantees unless the claim is approved and supported."
         ),
         (
-            r"\b(best|number\s*one|#1)\b",
+            r"\b(best|number\s+one|#1)\b",
             "Unsubstantiated superiority claim",
             "medium",
-            "Provide evidence for comparative claims."
+            "A comparative or superiority claim was detected.",
+            "Provide evidence or use more balanced wording."
         ),
         (
-            r"\b(risk[- ]free|100%\s*(safe|effective|secure))\b",
+            r"\b(risk[- ]free|100%\s+(safe|effective|secure))\b",
             "Absolute assurance",
             "high",
+            "An absolute assurance was detected.",
             "Avoid absolute assurances unless substantiated."
         ),
         (
             r"\b(act now|limited time only|claim your reward)\b",
             "High-pressure language",
             "medium",
-            "Use clear, low-pressure wording."
+            "Potentially high-pressure language was detected.",
+            "Use clear and low-pressure wording."
         )
     ]
 
-    for pattern, title, severity, suggestion in patterns:
-        matches = re.findall(
-            pattern, content, flags=re.IGNORECASE
-        )
+    for pattern, title, severity, message, suggestion in patterns:
 
-        if matches:
-            findings.append({
-                "title": title,
-                "category": "Messaging risk",
-                "severity": severity,
-                "message": (
-                    "Potentially risky marketing wording was detected."
-                ),
-                "suggestion": suggestion
-            })
+        if re.search(pattern, content, re.IGNORECASE):
 
-    # 4. Detect URLs.
+            add_finding(
+                findings,
+                title,
+                "Messaging risk",
+                severity,
+                message,
+                suggestion
+            )
+
+    # Links
     if re.search(
         r"(https?://|www\.|bit\.ly/|tinyurl\.com/)",
         content,
-        flags=re.IGNORECASE
+        re.IGNORECASE
     ):
-        findings.append({
-            "title": "Link detected",
-            "category": "Link review",
-            "severity": "notice",
-            "message": (
-                "The content contains a URL or shortened link. "
-                "This check does not verify the destination."
-            ),
-            "suggestion": (
-                "Verify that the destination is official and safe."
-            )
-        })
 
-    # 5. Detect excessive punctuation.
+        add_finding(
+            findings,
+            "Link detected",
+            "Link review",
+            "notice",
+            "The content contains a URL or shortened link.",
+            "Verify that the destination is official and safe."
+        )
+
+    # Excessive punctuation
     if re.search(r"!{2,}", content):
-        findings.append({
-            "title": "Excessive punctuation",
-            "category": "Tone",
-            "severity": "low",
-            "message": (
-                "Repeated exclamation marks may make the message "
-                "feel overly promotional."
-            ),
-            "suggestion": (
-                "Use standard punctuation for a professional tone."
-            )
-        })
 
-    # 6. Detect all-caps words.
-    if re.search(r"\b[A-Z]{5,}\b", content):
-        findings.append({
-            "title": "All-caps wording",
-            "category": "Tone",
-            "severity": "low",
-            "message": "A word written in all capitals was detected.",
-            "suggestion": (
-                "Use sentence case unless the word is an approved acronym."
-            )
-        })
+        add_finding(
+            findings,
+            "Excessive punctuation",
+            "Tone",
+            "low",
+            "Repeated exclamation marks may feel overly promotional.",
+            "Use standard punctuation."
+        )
 
-    # 7. Check configured brand name consistency.
-    brand_name = str(
-        guidelines.get("brand_name") or ""
-    ).strip()
+    # All caps
+    capital_words = re.findall(r"\b[A-Z]{5,}\b", content)
 
-    if brand_name:
-        alternatives = ["Inkloom", "Inkloom AI"]
+    if capital_words:
 
-        for alternative in alternatives:
-            if (
-                alternative.casefold() != brand_name.casefold()
-                and alternative.casefold() in lower_content
-            ):
-                findings.append({
-                    "title": "Brand name consistency",
-                    "category": "Brand identity",
-                    "severity": "low",
-                    "message": (
-                        f'The name "{alternative}" appears, while '
-                        f'the configured brand name is "{brand_name}".'
-                    ),
-                    "suggestion": (
-                        f'Use "{brand_name}" consistently when '
-                        "referring to your brand."
-                    )
-                })
-                break
+        add_finding(
+            findings,
+            "All-caps wording",
+            "Tone",
+            "low",
+            f'All-caps wording was detected: "{capital_words[0]}".',
+            "Use sentence case unless it is an approved acronym."
+        )
 
-    # 8. Calculate a heuristic compliance score.
     weights = {
         "high": 25,
         "medium": 15,
@@ -372,23 +451,30 @@ def analyse_content(content, guidelines):
 
     score = max(0, min(100, 100 - deductions))
 
-    if not findings:
-        summary = (
-            "No issues were detected by the configured rule checks. "
-            "A human review is still recommended."
-        )
-    elif any(
+    high_count = sum(
         item["severity"] == "high"
         for item in findings
-    ):
+    )
+
+    if not findings:
+
         summary = (
-            "High-priority wording needs review before this content "
-            "is approved."
+            "No issues were detected by the configured rule checks. "
+            "Human review is still recommended."
         )
-    else:
+
+    elif high_count:
+
         summary = (
-            "Some items may need revision to better align with "
-            "the brand guidelines."
+            f"{high_count} high-priority issue(s) detected. "
+            "Review the content before approval."
+        )
+
+    else:
+
+        summary = (
+            "Some improvements may be needed to better align "
+            "with the brand guidelines."
         )
 
     suggestions = list(dict.fromkeys(
@@ -406,15 +492,18 @@ def analyse_content(content, guidelines):
         "finding_count": len(findings),
         "analysis_type": "rule-based",
         "score_explanation": (
-            "This score is calculated from configured rules and "
+            "This score is calculated using configured rules and "
             "detected patterns. It is not AI model confidence."
         )
     }
 
 
-# ---------------- REVIEW SERIALISATION ----------------
+# =========================================================
+# REVIEW SERIALISATION
+# =========================================================
 
 def row_to_review(row):
+
     try:
         analysis = json.loads(row["analysis"])
     except (json.JSONDecodeError, TypeError):
@@ -437,38 +526,170 @@ def row_to_review(row):
     }
 
 
-# ---------------- WEBSITE ROUTES ----------------
+# =========================================================
+# WEBSITE
+# =========================================================
 
 @app.route("/")
 def index():
     return render_template("index.html")
 
 
-# ---------------- HEALTH CHECK ----------------
+# =========================================================
+# HEALTH API
+# =========================================================
 
 @app.route("/api/health", methods=["GET"])
 def health():
+
+    try:
+
+        with get_db() as conn:
+            conn.execute("SELECT 1")
+
+        return jsonify({
+            "status": "ok",
+            "application": "Inkloom AI",
+            "analysis_engine": "rule-based",
+            "database": "connected"
+        })
+
+    except Exception:
+
+        app.logger.exception("Health check database error")
+
+        return jsonify({
+            "status": "error",
+            "application": "Inkloom AI",
+            "database": "unavailable"
+        }), 500
+
+
+# =========================================================
+# LOGIN API
+# =========================================================
+
+@app.route("/api/login", methods=["POST"])
+def login_api():
+
+    payload = request.get_json(silent=True) or {}
+
+    email = str(payload.get("email", "")).strip().lower()
+    password = str(payload.get("password", ""))
+
+    if not email or not password:
+
+        return jsonify({
+            "success": False,
+            "error": "Please enter email and password."
+        }), 400
+
+    with get_db() as conn:
+
+        user = conn.execute(
+            "SELECT * FROM users WHERE email = ?",
+            (email,)
+        ).fetchone()
+
+    if user is None or not check_password_hash(
+        user["password"], password
+    ):
+
+        return jsonify({
+            "success": False,
+            "error": "Invalid email or password."
+        }), 401
+
+    session.clear()
+
+    session["user_id"] = user["id"]
+    session["user_name"] = user["name"]
+    session["user_email"] = user["email"]
+    session["user_role"] = user["role"]
+
     return jsonify({
-        "status": "ok",
-        "application": "Inkloom AI"
+        "success": True,
+        "message": "Login successful.",
+        "user": {
+            "id": user["id"],
+            "name": user["name"],
+            "email": user["email"],
+            "role": user["role"]
+        }
     })
 
 
-# ---------------- GUIDELINES API ----------------
+# =========================================================
+# CURRENT USER API
+# =========================================================
+
+@app.route("/api/me", methods=["GET"])
+def current_user_api():
+
+    if "user_id" not in session:
+
+        return jsonify({
+            "success": True,
+            "authenticated": False,
+            "user": None
+        })
+
+    return jsonify({
+        "success": True,
+        "authenticated": True,
+        "user": {
+            "id": session["user_id"],
+            "name": session["user_name"],
+            "email": session["user_email"],
+            "role": session["user_role"]
+        }
+    })
+
+
+# =========================================================
+# LOGOUT API
+# =========================================================
+
+@app.route("/api/logout", methods=["POST"])
+def logout_api():
+
+    session.clear()
+
+    return jsonify({
+        "success": True,
+        "message": "Logged out successfully."
+    })
+
+
+# =========================================================
+# GUIDELINES API
+# =========================================================
 
 @app.route("/api/guidelines", methods=["GET", "POST"])
+@login_required
 def guidelines_api():
+
     if request.method == "GET":
+
         current = get_guidelines()
 
         return jsonify({
+            "success": True,
             "guidelines": current,
             **current
         })
 
+    if session.get("user_role") != "admin":
+
+        return jsonify({
+            "success": False,
+            "error": "Only an admin can update brand guidelines."
+        }), 403
+
     payload = request.get_json(silent=True)
 
     if not isinstance(payload, dict):
+
         return jsonify({
             "error": "Request body must be a JSON object."
         }), 400
@@ -476,17 +697,15 @@ def guidelines_api():
     updated = normalise_guidelines(payload)
 
     with get_db() as conn:
-        conn.execute(
-            """
+
+        conn.execute("""
             UPDATE guidelines
             SET data = ?, updated_at = ?
             WHERE id = 1
-            """,
-            (
-                json.dumps(updated, ensure_ascii=False),
-                now_iso()
-            )
-        )
+        """, (
+            json.dumps(updated, ensure_ascii=False),
+            now_iso()
+        ))
 
     return jsonify({
         "success": True,
@@ -495,13 +714,18 @@ def guidelines_api():
     })
 
 
-# ---------------- ANALYSIS API ----------------
+# =========================================================
+# ANALYSIS API
+# =========================================================
 
 @app.route("/api/analyse", methods=["POST"])
+@login_required
 def analyse_api():
+
     payload = request.get_json(silent=True)
 
     if not isinstance(payload, dict):
+
         return jsonify({
             "error": "Send a JSON object containing content."
         }), 400
@@ -514,6 +738,7 @@ def analyse_api():
     )
 
     if not isinstance(content, str):
+
         return jsonify({
             "error": "Content must be text."
         }), 400
@@ -521,13 +746,18 @@ def analyse_api():
     content = content.strip()
 
     if not content:
+
         return jsonify({
             "error": "Please provide content to analyse."
         }), 400
 
-    if len(content) > 100000:
+    if len(content) > MAX_ANALYSIS_LENGTH:
+
         return jsonify({
-            "error": "Content is too long. Limit is 100,000 characters."
+            "error": (
+                f"Content is too long. Limit is "
+                f"{MAX_ANALYSIS_LENGTH:,} characters."
+            )
         }), 413
 
     guidelines = get_guidelines()
@@ -535,8 +765,8 @@ def analyse_api():
     timestamp = now_iso()
 
     with get_db() as conn:
-        cursor = conn.execute(
-            """
+
+        cursor = conn.execute("""
             INSERT INTO reviews
             (
                 content,
@@ -548,15 +778,13 @@ def analyse_api():
                 updated_at
             )
             VALUES (?, ?, ?, 'Pending', '', ?, ?)
-            """,
-            (
-                content,
-                json.dumps(analysis, ensure_ascii=False),
-                analysis["compliance_score"],
-                timestamp,
-                timestamp
-            )
-        )
+        """, (
+            content,
+            json.dumps(analysis, ensure_ascii=False),
+            analysis["compliance_score"],
+            timestamp,
+            timestamp
+        ))
 
         review_id = cursor.lastrowid
 
@@ -578,38 +806,47 @@ def analyse_api():
     })
 
 
-# ---------------- REVIEW HISTORY API ----------------
+# =========================================================
+# REVIEW HISTORY API
+# =========================================================
 
 @app.route("/api/reviews", methods=["GET"])
+@login_required
 def reviews_api():
+
     with get_db() as conn:
-        rows = conn.execute(
-            """
+
+        rows = conn.execute("""
             SELECT *
             FROM reviews
             ORDER BY id DESC
             LIMIT 50
-            """
-        ).fetchall()
+        """).fetchall()
 
     reviews = [row_to_review(row) for row in rows]
 
     return jsonify({
+        "success": True,
         "reviews": reviews,
         "count": len(reviews)
     })
 
 
-# ---------------- HUMAN REVIEW DECISION API ----------------
+# =========================================================
+# HUMAN REVIEW DECISION API
+# =========================================================
 
 @app.route(
     "/api/reviews/<int:review_id>/decision",
     methods=["POST"]
 )
+@reviewer_required
 def review_decision_api(review_id):
+
     payload = request.get_json(silent=True)
 
     if not isinstance(payload, dict):
+
         return jsonify({
             "error": "Request body must be a JSON object."
         }), 400
@@ -620,15 +857,20 @@ def review_decision_api(review_id):
 
     allowed = {
         "approved": "Approved",
+        "approve": "Approved",
         "rejected": "Rejected",
+        "reject": "Rejected",
         "changes": "Changes Requested",
-        "changes requested": "Changes Requested"
+        "changes requested": "Changes Requested",
+        "request changes": "Changes Requested"
     }
 
     if decision not in allowed:
+
         return jsonify({
             "error": (
-                "Decision must be approved, rejected, or changes."
+                "Decision must be approved, rejected, "
+                "or changes requested."
             )
         }), 400
 
@@ -640,58 +882,176 @@ def review_decision_api(review_id):
     ).strip()
 
     if len(note) > 5000:
+
         return jsonify({
             "error": "Reviewer note is too long."
         }), 400
 
+    timestamp = now_iso()
+    final_decision = allowed[decision]
+
     with get_db() as conn:
+
         row = conn.execute(
             "SELECT id FROM reviews WHERE id = ?",
             (review_id,)
         ).fetchone()
 
         if row is None:
+
             return jsonify({
                 "error": "Review not found."
             }), 404
 
-        conn.execute(
-            """
+        conn.execute("""
             UPDATE reviews
             SET decision = ?,
                 reviewer_note = ?,
                 updated_at = ?
             WHERE id = ?
-            """,
-            (
-                allowed[decision],
-                note,
-                now_iso(),
-                review_id
-            )
-        )
+        """, (
+            final_decision,
+            note,
+            timestamp,
+            review_id
+        ))
+
+        conn.execute("""
+            INSERT INTO audit_logs
+            (review_id, user_id, user_name, action, note, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            review_id,
+            session.get("user_id"),
+            session.get("user_name", "Unknown"),
+            final_decision,
+            note,
+            timestamp
+        ))
 
     return jsonify({
         "success": True,
-        "message": f"Decision saved: {allowed[decision]}.",
+        "message": f"Decision saved: {final_decision}.",
         "review_id": review_id,
-        "decision": allowed[decision],
+        "decision": final_decision,
         "reviewer_note": note
     })
 
 
-# ---------------- ERROR HANDLERS ----------------
+# =========================================================
+# AUDIT LOG API
+# =========================================================
+
+@app.route("/api/audit", methods=["GET"])
+@reviewer_required
+def audit_api():
+
+    with get_db() as conn:
+
+        rows = conn.execute("""
+            SELECT *
+            FROM audit_logs
+            ORDER BY id DESC
+            LIMIT 100
+        """).fetchall()
+
+    logs = [dict(row) for row in rows]
+
+    return jsonify({
+        "success": True,
+        "logs": logs,
+        "audit_logs": logs
+    })
+
+
+# =========================================================
+# ANALYTICS API
+# =========================================================
+
+@app.route("/api/analytics", methods=["GET"])
+@reviewer_required
+def analytics_api():
+
+    with get_db() as conn:
+
+        rows = conn.execute("""
+            SELECT id, compliance_score, decision,
+                   analysis, created_at
+            FROM reviews
+            ORDER BY id ASC
+        """).fetchall()
+
+    total = len(rows)
+
+    approved = sum(
+        row["decision"] == "Approved"
+        for row in rows
+    )
+
+    pending = sum(
+        row["decision"] == "Pending"
+        for row in rows
+    )
+
+    average_score = round(
+        sum(row["compliance_score"] for row in rows) / total,
+        1
+    ) if total else 0
+
+    violation_counts = {}
+    trend = []
+
+    for row in rows:
+
+        try:
+            analysis = json.loads(row["analysis"])
+        except (json.JSONDecodeError, TypeError):
+            analysis = {}
+
+        for finding in analysis.get("findings", []):
+
+            title = finding.get("title", "Other")
+
+            violation_counts[title] = (
+                violation_counts.get(title, 0) + 1
+            )
+
+        trend.append({
+            "id": row["id"],
+            "score": row["compliance_score"],
+            "created_at": row["created_at"]
+        })
+
+    return jsonify({
+        "success": True,
+        "total_reviews": total,
+        "total": total,
+        "approved": approved,
+        "pending": pending,
+        "average_score": average_score,
+        "violation_counts": violation_counts,
+        "score_trend": trend,
+        "trend": trend
+    })
+
+
+# =========================================================
+# ERROR HANDLERS
+# =========================================================
 
 @app.errorhandler(413)
-def request_too_large(_error):
+def request_too_large(error):
+
     return jsonify({
-        "error": "Request too large. Maximum size is 2 MB."
+        "error": "Request too large. Please reduce the content size."
     }), 413
 
 
 @app.errorhandler(404)
-def not_found(_error):
+def not_found(error):
+
     if request.path.startswith("/api/"):
+
         return jsonify({
             "error": "API endpoint not found."
         }), 404
@@ -701,27 +1061,44 @@ def not_found(_error):
 
 @app.errorhandler(Exception)
 def internal_error(error):
-    # Normal HTTP errors (405, 400, ...) keep their own status code.
-    if isinstance(error, HTTPException):
-        return jsonify({
-            "error": error.description
-        }), error.code
 
+    if isinstance(error, HTTPException):
+        return error
+
+    # Print complete traceback in Render Runtime Logs
     app.logger.exception("Unexpected server error")
 
     return jsonify({
-        "error": f"{type(error).__name__}: {error}"
+        "error": "An unexpected server error occurred."
     }), 500
 
 
-# Initialise the database when the application starts.
-init_db()
+# =========================================================
+# START APPLICATION
+# =========================================================
+
+try:
+
+    init_db()
+    app.logger.info("Inkloom AI database initialized successfully.")
+    app.logger.info("Database path: %s", DB_PATH)
+
+except Exception:
+
+    app.logger.exception("Database initialization failed")
+    raise
+
+
+app.logger.info("Registered application routes:")
+
+for route in app.url_map.iter_rules():
+    app.logger.info("%s", route)
 
 
 if __name__ == "__main__":
-    import os
+
     app.run(
         host="0.0.0.0",
-        port=int(os.environ.get("PORT",5000)),
+        port=int(os.environ.get("PORT", 5000)),
         debug=False
     )
